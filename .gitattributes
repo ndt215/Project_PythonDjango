@@ -1,0 +1,9 @@
+# Chuẩn hóa xuống dòng LF cho mọi file text (tránh diff rác giữa Windows/macOS/Linux)
+* text=auto eol=lf
+
+# File nhị phân không xử lý xuống dòng
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary

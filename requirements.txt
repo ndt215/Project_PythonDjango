@@ -1,0 +1,5 @@
+# Django 6.1 yêu cầu Python 3.12 trở lên
+Django>=6.1,<7.0
+djangorestframework>=3.18.0
+django-cors-headers>=4.9.0
+Pillow>=12.0.0

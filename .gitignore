@@ -1,0 +1,27 @@
+# Môi trường ảo (PyCharm tự tạo)
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+/staticfiles/
+
+# Media: ảnh người dùng tải lên (không commit lên Git)
+/media/*
+!/media/.gitkeep
+
+# PyCharm / IDE
+.idea/
+.vscode/
+
+# Hệ điều hành
+.DS_Store
+Thumbs.db
