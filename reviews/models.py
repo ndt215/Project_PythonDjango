@@ -14,9 +14,10 @@ Sau khi sửa file này, chạy:
 """
 
 from django.conf import settings
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser , UserManager
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Avg, F
 from django.utils.text import slugify
 
 
@@ -26,8 +27,15 @@ from django.utils.text import slugify
 # is_staff, is_superuser, is_active, date_joined...
 # Bổ sung các trường nghiệp vụ: họ tên, email, ảnh đại diện, tiểu sử, vai trò...
 # ===========================================================================
+
+class NguoiDungManager(UserManager):
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
+        extra_fields.setdefault("vai_tro", "quan_tri_vien")
+        return super().create_superuser(username, email, password, **extra_fields)
+
 class NguoiDung(AbstractUser):
     """Người dùng hệ thống: Quản trị viên, Thành viên hoặc Khách."""
+    objects = NguoiDungManager()
 
     class VaiTro(models.TextChoices):
         QUAN_TRI_VIEN = "quan_tri_vien", "Quản trị viên"
@@ -65,7 +73,7 @@ class NguoiDung(AbstractUser):
 
     class Meta:
         verbose_name = "Người dùng"
-        verbose_name_plural = "Người dùng"
+        verbose_name_plural = "Danh sách người dùng"
         ordering = ["-ngay_tao"]
 
     def __str__(self):
@@ -97,7 +105,7 @@ class NhaHang(models.Model):
         max_length=220,
         unique=True,
         blank=True,
-        help_text="Bỏ trống để hệ thống tự tạo từ tên quán.",
+        help_text="Bỏ trống để hệ thống tự tạo từ tên quán." #Tự động tạo tên qua save()  ,
     )
     dia_chi = models.CharField("Địa chỉ", max_length=255)
     quan_huyen = models.CharField("Quận/Huyện", max_length=100)
@@ -126,7 +134,7 @@ class NhaHang(models.Model):
 
     class Meta:
         verbose_name = "Nhà hàng"
-        verbose_name_plural = "Nhà hàng"
+        verbose_name_plural = "Danh sách nhà hàng"
         ordering = ["ten_quan"]
 
     def __str__(self):
@@ -136,10 +144,11 @@ class NhaHang(models.Model):
         """Tự sinh slug duy nhất từ tên quán nếu người dùng để trống."""
         if not self.slug:
             goc = slugify(self.ten_quan)[:200] or "nha-hang"
+            #[:200] cắt đúng 200 ký tự chừa 20 để điền hậu tố
             slug = goc
             so_thu_tu = 2
             while (
-                NhaHang.objects.filter(slug=slug).exclude(pk=self.pk).exists()
+                    NhaHang.objects.filter(slug=slug).exclude(pk=self.pk).exists()
             ):
                 slug = f"{goc}-{so_thu_tu}"
                 so_thu_tu += 1
@@ -170,7 +179,7 @@ class TheMonAn(models.Model):
 
     class Meta:
         verbose_name = "Thẻ món ăn"
-        verbose_name_plural = "Thẻ món ăn"
+        verbose_name_plural = "Danh sách thẻ món ăn"
         ordering = ["ten_the"]
 
     def __str__(self):
@@ -244,7 +253,7 @@ class BaiReview(models.Model):
 
     class Meta:
         verbose_name = "Bài review"
-        verbose_name_plural = "Bài review"
+        verbose_name_plural = "Các bài review"
         ordering = ["-ngay_tao"]
 
     def __str__(self):
@@ -252,16 +261,31 @@ class BaiReview(models.Model):
 
 
 # ===========================================================================
-# 5. CHẤM ĐIỂM (quan hệ 1-1 với Bài review)
+# 5. CHẤM ĐIỂM
+# [SUA 2026-11-17] Trước đây dùng OneToOneField -> mỗi bài chỉ có MỘT bản ghi
+# điểm, nên chỉ tác giả bài (hoặc admin) mới chấm được.
+# Nay đổi sang ForeignKey + them nguoi_dung + UniqueConstraint: MỌI thành viên
+# đã đăng nhập đều chấm được, mỗi người một lượt/bài.
 # ===========================================================================
 class ChamDiem(models.Model):
     """4 tiêu chí chấm điểm, mỗi tiêu chí từ 1.0 đến 5.0."""
 
-    bai_review = models.OneToOneField(
+    # [SUA] OneToOneField -> ForeignKey, related_name mới
+    bai_review = models.ForeignKey(
         BaiReview,
         on_delete=models.CASCADE,
-        related_name="cham_diem",
+        related_name="danh_sach_cham_diem",
         verbose_name="Bài review",
+    )
+    # [MOI] Ai là người chấm điểm này
+    nguoi_dung = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="cham_diem",
+        verbose_name="Người chấm",
+        null=True,
+        blank=True,
+        help_text="Tạm cho phép null để giữ dữ liệu cũ; API luôn tự gán.",
     )
     vi_giac = models.FloatField(
         "Vị giác",
@@ -286,24 +310,55 @@ class ChamDiem(models.Model):
         verbose_name = "Chấm điểm"
         verbose_name_plural = "Chấm điểm"
         ordering = ["-ngay_tao"]
+        # [MOI] Mỗi người chỉ chấm một bài một lần
+        constraints = [
+            models.UniqueConstraint(
+                fields=["nguoi_dung", "bai_review"],
+                name="uniq_cham_diem_nguoi_bai",
+            )
+        ]
 
     def __str__(self):
-        return f"Chấm điểm cho \"{self.bai_review.tieu_de}\" ({self.diem_trung_binh}/5)"
+        nguoi_cham = self.nguoi_dung or "Ẩn danh"
+        return f'{nguoi_cham} chấm "{self.bai_review.tieu_de}" ({self.diem_trung_binh}/5)'
 
     @property
     def diem_trung_binh(self):
-        """Trung bình cộng của 4 tiêu chí, làm tròn 1 chữ số thập phân."""
+        """Trung bình cộng 4 tiêu chí của RIÊNG lượt chấm này."""
         return round(
             (self.vi_giac + self.khong_gian + self.phuc_vu + self.gia_ca) / 4,
             1,
         )
 
-    def save(self, *args, **kwargs):
-        """Lưu điểm và cập nhật lại điểm trung bình cho bài review."""
-        super().save(*args, **kwargs)
-        BaiReview.objects.filter(pk=self.bai_review_id).update(
-            diem_trung_binh=self.diem_trung_binh
+    @staticmethod
+    def cap_nhat_diem_trung_binh(bai_review_id):
+        """
+        [MOI] Tính lại điểm trung bình của bài review từ TẤT CẢ lượt chấm.
+        Trước đây chỉ lấy điểm của bản ghi duy nhất.
+        """
+        ket_qua = ChamDiem.objects.filter(
+            bai_review_id=bai_review_id
+        ).aggregate(
+            tb=Avg(
+                (F("vi_giac") + F("khong_gian") + F("phuc_vu") + F("gia_ca"))
+                / 4.0
+            )
         )
+        BaiReview.objects.filter(pk=bai_review_id).update(
+            diem_trung_binh=round(ket_qua["tb"] or 0, 1)
+        )
+
+    def save(self, *args, **kwargs):
+        """[SUA] Lưu điểm rồi tính lại trung bình cộng của mọi lượt chấm."""
+        super().save(*args, **kwargs)
+        self.cap_nhat_diem_trung_binh(self.bai_review_id)
+
+    def delete(self, *args, **kwargs):
+        """[MOI] Khi xóa một lượt chấm, tính lại điểm trung bình của bài."""
+        bai_review_id = self.bai_review_id
+        ket_qua = super().delete(*args, **kwargs)
+        self.cap_nhat_diem_trung_binh(bai_review_id)
+        return ket_qua
 
 
 # ===========================================================================
@@ -317,6 +372,16 @@ class HinhAnh(models.Model):
         on_delete=models.CASCADE,
         related_name="hinh_anh",
         verbose_name="Bài review",
+    )
+    # [MOI] Ai là người tải ảnh lên (để biết ai được sửa/xóa ảnh)
+    nguoi_dung = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="hinh_anh",
+        verbose_name="Người tải ảnh",
+        null=True,
+        blank=True,
+        help_text="Tạm cho phép null để giữ dữ liệu cũ; API luôn tự gán.",
     )
     hinh_anh = models.ImageField(
         "Hình ảnh",
@@ -338,7 +403,7 @@ class HinhAnh(models.Model):
 
     class Meta:
         verbose_name = "Hình ảnh"
-        verbose_name_plural = "Hình ảnh"
+        verbose_name_plural = "Danh sách hình ảnh"
         ordering = ["thu_tu", "id"]
 
     def __str__(self):

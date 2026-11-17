@@ -117,13 +117,15 @@ class TheMonAnAdmin(admin.ModelAdmin):
 class ChamDiemInline(admin.StackedInline):
     model = ChamDiem
     extra = 1
-    max_num = 1
+    # [SUA] Bỏ max_num = 1: một bài có thể có nhiều lượt chấm của nhiều người
+    fields = ["nguoi_dung", "vi_giac", "khong_gian", "phuc_vu", "gia_ca"]
 
 
 class HinhAnhInline(admin.TabularInline):
     model = HinhAnh
     extra = 1
-    fields = ["hinh_anh", "mo_ta", "la_anh_bia", "thu_tu"]
+    # [SUA] Thêm nguoi_dung để biết ai tải ảnh
+    fields = ["nguoi_dung", "hinh_anh", "mo_ta", "la_anh_bia", "thu_tu"]
 
 
 class BinhLuanInline(admin.TabularInline):
@@ -162,6 +164,7 @@ class BaiReviewAdmin(admin.ModelAdmin):
 class ChamDiemAdmin(admin.ModelAdmin):
     list_display = [
         "bai_review",
+        "nguoi_dung",       # [MOI]
         "vi_giac",
         "khong_gian",
         "phuc_vu",
@@ -169,7 +172,7 @@ class ChamDiemAdmin(admin.ModelAdmin):
         "diem_trung_binh",
         "ngay_cap_nhat",
     ]
-    search_fields = ["bai_review__tieu_de"]
+    search_fields = ["bai_review__tieu_de", "nguoi_dung__username"]
 
 
 # ===========================================================================
@@ -177,9 +180,16 @@ class ChamDiemAdmin(admin.ModelAdmin):
 # ===========================================================================
 @admin.register(HinhAnh)
 class HinhAnhAdmin(admin.ModelAdmin):
-    list_display = ["bai_review", "mo_ta", "la_anh_bia", "thu_tu", "ngay_tao"]
+    list_display = [
+        "bai_review",
+        "nguoi_dung",       # [MOI]
+        "mo_ta",
+        "la_anh_bia",
+        "thu_tu",
+        "ngay_tao",
+    ]
     list_filter = ["la_anh_bia"]
-    search_fields = ["bai_review__tieu_de", "mo_ta"]
+    search_fields = ["bai_review__tieu_de", "mo_ta", "nguoi_dung__username"]
 
 
 # ===========================================================================

@@ -13,6 +13,22 @@ CRUD (List / Create / Retrieve / Update / Destroy) mà không phải viết nhi�
 
 Tài liệu: https://www.django-rest-framework.org/api-guide/viewsets/
 """
+#Phan quyen
+from django.db.models import Q
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.permissions import SAFE_METHODS, AllowAny
+
+from .permissions import ChuSoHuuHoacQuanTri, LaQuanTriVien, la_quan_tri
+
+from rest_framework import generics
+
+from .serializers import DangNhapSerializer
+from .serializers import DangKySerializer
+
+from django.contrib.auth import logout as django_logout
+from rest_framework.authtoken.models import Token
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from rest_framework import filters, viewsets
 from rest_framework.response import Response
@@ -52,6 +68,9 @@ class NguoiDungViewSet(viewsets.ModelViewSet):
 
     queryset = NguoiDung.objects.all().order_by("-ngay_tao")
     serializer_class = NguoiDungSerializer
+
+    permission_classes = [LaQuanTriVien]
+
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["username", "ho_ten", "email"]
     ordering_fields = ["ngay_tao", "username"]
@@ -79,6 +98,12 @@ class NhaHangViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [LaQuanTriVien()]
+
+
 
 # ===========================================================================
 # THẺ MÓN ĂN
@@ -91,6 +116,12 @@ class TheMonAnViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["ten_the"]
 
+    def get_permissions(self):
+        if self.request.method in SAFE_METHODS:
+            return [AllowAny()]
+        return [LaQuanTriVien()]
+
+
 
 # ===========================================================================
 # BÀI REVIEW
@@ -101,8 +132,15 @@ class BaiReviewViewSet(viewsets.ModelViewSet):
     queryset = BaiReview.objects.select_related(
         "nguoi_dung",
         "nha_hang",
-    ).prefetch_related("the_mon_an", "hinh_anh")
+    ).prefetch_related(
+        "the_mon_an",
+        "hinh_anh",
+        # [MOI] nạp sẵn điểm + người chấm để tránh N+1 query
+        "danh_sach_cham_diem__nguoi_dung",
+    )
     serializer_class = BaiReviewSerializer
+    # [SUA] Trước đây thiếu dòng này nên thành viên sửa/xóa được bài người khác
+    permission_classes = [ChuSoHuuHoacQuanTri]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["tieu_de", "noi_dung", "nha_hang__ten_quan"]
     ordering_fields = ["ngay_tao", "diem_trung_binh", "luot_thich"]
@@ -115,6 +153,17 @@ class BaiReviewViewSet(viewsets.ModelViewSet):
             /api/bai-review/?trang_thai=da_dang
         """
         queryset = super().get_queryset()
+        user = self.request.user
+
+        # 1. Lọc theo vai trò
+        if not la_quan_tri(user):
+            if user.is_authenticated:
+                queryset = queryset.filter(
+                    Q(trang_thai="da_dang") | Q(nguoi_dung=user)
+                )
+            else:
+                queryset = queryset.filter(trang_thai="da_dang")
+
 
         nha_hang_id = self.request.query_params.get("nha_hang")
         if nha_hang_id:
@@ -130,28 +179,35 @@ class BaiReviewViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    def perform_create(self, serializer):
+        serializer.save(nguoi_dung=self.request.user)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[LaQuanTriVien],
+    )
+    def duyet(self, request, pk=None):
+        bai = self.get_object()
+        bai.trang_thai = BaiReview.TrangThai.DA_DANG
+        bai.save(update_fields=["trang_thai"])
+        return Response({"trang_thai": bai.trang_thai})
+
 
 # ===========================================================================
 # CHẤM ĐIỂM
+# [SUA 2026-11-17] Mọi thành viên đã đăng nhập đều được chấm điểm.
+# Trước đây code chặn "chỉ chấm bài của mình" vì model là OneToOne.
 # ===========================================================================
 class ChamDiemViewSet(viewsets.ModelViewSet):
-    """CRUD điểm đánh giá (mỗi bài review chỉ có một bản ghi điểm)."""
+    """CRUD điểm đánh giá (mỗi người chấm một bài một lần)."""
 
-    queryset = ChamDiem.objects.select_related("bai_review")
+    queryset = ChamDiem.objects.select_related("bai_review", "nguoi_dung")
     serializer_class = ChamDiemSerializer
-
-
-# ===========================================================================
-# HÌNH ẢNH
-# ===========================================================================
-class HinhAnhViewSet(viewsets.ModelViewSet):
-    """Tải lên và quản lý ảnh của bài review (multipart/form-data)."""
-
-    queryset = HinhAnh.objects.select_related("bai_review")
-    serializer_class = HinhAnhSerializer
+    permission_classes = [ChuSoHuuHoacQuanTri]
 
     def get_queryset(self):
-        """Lọc ảnh theo bài review: /api/hinh-anh/?bai_review=1"""
+        """Lọc theo bài review: /api/cham-diem/?bai_review=1"""
         queryset = super().get_queryset()
         bai_review_id = self.request.query_params.get("bai_review")
 
@@ -159,6 +215,61 @@ class HinhAnhViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(bai_review_id=bai_review_id)
 
         return queryset
+
+    def perform_create(self, serializer):
+        bai = serializer.validated_data["bai_review"]
+
+        # [MOI] Chỉ chấm bài đã đăng; tác giả/admin được chấm bài của mình
+        if (
+            bai.trang_thai != BaiReview.TrangThai.DA_DANG
+            and not la_quan_tri(self.request.user)
+            and bai.nguoi_dung_id != self.request.user.id
+        ):
+            raise PermissionDenied("Chỉ được chấm điểm bài đã đăng.")
+
+        # [MOI] Chặn chấm trùng (UniqueConstraint cũng chặn, nhưng trả 400 đẹp hơn)
+        if ChamDiem.objects.filter(
+            bai_review=bai, nguoi_dung=self.request.user
+        ).exists():
+            raise ValidationError(
+                {"chi_tiet": "Bạn đã chấm điểm bài này rồi."}
+            )
+
+        # [SUA] Tự gán người chấm, không tin dữ liệu client
+        serializer.save(nguoi_dung=self.request.user)
+
+
+# ===========================================================================
+# HÌNH ẢNH
+# [SUA 2026-11-17] Mọi thành viên đã đăng nhập đều được tải ảnh lên.
+# Ảnh do ai tải thì người đó (hoặc admin) được sửa/xóa.
+# ===========================================================================
+class HinhAnhViewSet(viewsets.ModelViewSet):
+    """Tải lên và quản lý ảnh của bài review (multipart/form-data)."""
+
+    queryset = HinhAnh.objects.select_related("bai_review", "nguoi_dung")
+    serializer_class = HinhAnhSerializer
+    permission_classes = [ChuSoHuuHoacQuanTri]
+
+    def get_queryset(self):
+        """Lọc ảnh theo bài review: /api/hinh-anh/?bai_review=1"""
+        queryset = super().get_queryset()
+
+        # Khách không thấy ảnh của bài chưa đăng
+        if not self.request.user.is_authenticated:
+            queryset = queryset.filter(bai_review__trang_thai="da_dang")
+
+        bai_review_id = self.request.query_params.get("bai_review")
+
+        if bai_review_id:
+            queryset = queryset.filter(bai_review_id=bai_review_id)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        # [SUA] Bỏ kiểm tra "chỉ chủ bài"; mọi thành viên đều được upload
+        # và server tự gán người tải ảnh.
+        serializer.save(nguoi_dung=self.request.user)
 
 
 # ===========================================================================
@@ -169,16 +280,23 @@ class BinhLuanViewSet(viewsets.ModelViewSet):
 
     queryset = BinhLuan.objects.select_related("nguoi_dung", "bai_review")
     serializer_class = BinhLuanSerializer
+    permission_classes = [ChuSoHuuHoacQuanTri]
 
     def get_queryset(self):
-        """Ví dụ: /api/binh-luan/?bai_review=1"""
         queryset = super().get_queryset()
-        bai_review_id = self.request.query_params.get("bai_review")
 
+        # Khách không thấy bình luận của bài chưa đăng
+        if not self.request.user.is_authenticated:
+            queryset = queryset.filter(bai_review__trang_thai="da_dang")
+
+        bai_review_id = self.request.query_params.get("bai_review")
         if bai_review_id:
             queryset = queryset.filter(bai_review_id=bai_review_id)
 
         return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(nguoi_dung=self.request.user)
 
 
 # ===========================================================================
@@ -189,6 +307,10 @@ class LuotThichViewSet(viewsets.ModelViewSet):
 
     queryset = LuotThich.objects.select_related("nguoi_dung", "bai_review")
     serializer_class = LuotThichSerializer
+    permission_classes = [ChuSoHuuHoacQuanTri]
+
+    def perform_create(self, serializer):
+        serializer.save(nguoi_dung=self.request.user)
 
 
 class QuanYeuThichViewSet(viewsets.ModelViewSet):
@@ -196,16 +318,23 @@ class QuanYeuThichViewSet(viewsets.ModelViewSet):
 
     queryset = QuanYeuThich.objects.select_related("nguoi_dung", "nha_hang")
     serializer_class = QuanYeuThichSerializer
+    permission_classes = [ChuSoHuuHoacQuanTri]
+
+    def perform_create(self, serializer):
+        serializer.save(nguoi_dung=self.request.user)
 
 
 class TheoDoiViewSet(viewsets.ModelViewSet):
     """Theo dõi / bỏ theo dõi người dùng khác."""
 
     queryset = TheoDoi.objects.select_related(
-        "nguoi_theo_doi",
-        "nguoi_duoc_theo_doi",
+        "nguoi_theo_doi", "nguoi_duoc_theo_doi"
     )
     serializer_class = TheoDoiSerializer
+    permission_classes = [ChuSoHuuHoacQuanTri]
+
+    def perform_create(self, serializer):
+        serializer.save(nguoi_theo_doi=self.request.user)
 
 
 # ===========================================================================
@@ -218,6 +347,7 @@ class TongQuanView(APIView):
     Trả về số lượng bản ghi của 10 bảng, giúp người mới kiểm tra nhanh
     dữ liệu mẫu sau khi chạy migrate.
     """
+    permission_classes = [LaQuanTriVien]
 
     def get(self, request):
         du_lieu = {
@@ -239,3 +369,60 @@ class TongQuanView(APIView):
                 "so_luong_ban_ghi": du_lieu,
             }
         )
+
+
+class DangNhapView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = DangNhapSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data["user"]
+
+        token, _ = Token.objects.get_or_create(user=user)
+
+        return Response(
+            {
+                "token": token.key,
+                "nguoi_dung": NguoiDungSerializer(user).data,
+            }
+        )
+
+class DangKyView(generics.CreateAPIView): #CreateApiView de tao nhu 1 Browsable API
+    serializer_class = DangKySerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        token, _ = Token.objects.get_or_create(user=user)
+
+        return Response(
+            {
+                "token": token.key,
+                "nguoi_dung": NguoiDungSerializer(user).data,
+            },
+            status=201,
+        )
+
+class DangXuatView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.auth is not None:
+            request.auth.delete()      # xóa token trong CSDL
+        else:
+            django_logout(request)      # đăng xuất session (Browsable API)
+
+        return Response({"thong_bao": "Đăng xuất thành công."})
+
+
+#Kiem tra token con hieu luc khong?
+class HoSoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(NguoiDungSerializer(request.user).data)
