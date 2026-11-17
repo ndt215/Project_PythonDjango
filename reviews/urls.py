@@ -29,6 +29,10 @@ router.register(
 router.register("theo-doi", views.TheoDoiViewSet, basename="theo-doi")
 
 urlpatterns = [
+    path("dang-ky/", views.DangKyView.as_view(), name="dang-ky"),
+    path("dang-nhap/", views.DangNhapView.as_view(), name="dang-nhap"),
+    path("dang-xuat/", views.DangXuatView.as_view(), name="dang-xuat"),
+    path("ho-so/", views.HoSoView.as_view(), name="ho-so"),
     path("", include(router.urls)),
     path("tong-quan/", views.TongQuanView.as_view(), name="tong-quan"),
 ]

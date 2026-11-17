@@ -12,6 +12,7 @@ from django.contrib import admin
 from django.urls import include, path
 
 urlpatterns = [
+    path("api-auth/", include("rest_framework.urls")), #Session API
     path("admin/", admin.site.urls),
     # Toàn bộ endpoint API nằm trong app reviews
     path("api/", include("reviews.urls")),
