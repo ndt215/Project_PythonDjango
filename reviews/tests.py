@@ -158,7 +158,8 @@ class ChamDiemVaHinhAnhTests(TestCase):
     # ------------------------------------------------------------------
     # HÌNH ẢNH
     # ------------------------------------------------------------------
-    def test_moi_thanh_vien_duoc_upload_anh(self):
+    def test_chi_nguoi_dang_bai_duoc_upload_anh(self):
+        # A là tác giả bài -> được upload
         r = self.client_a.post(
             "/api/hinh-anh/",
             {"bai_review": self.bai.id, "hinh_anh": tao_anh_jpeg("a.jpg")},
@@ -167,13 +168,22 @@ class ChamDiemVaHinhAnhTests(TestCase):
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(r.data["nguoi_dung"], self.a.id)
 
+        # B không phải tác giả -> bị chặn 403
         r = self.client_b.post(
             "/api/hinh-anh/",
             {"bai_review": self.bai.id, "hinh_anh": tao_anh_jpeg("b.jpg")},
             format="multipart",
         )
+        self.assertEqual(r.status_code, 403, r.data)
+        self.assertEqual(HinhAnh.objects.filter(bai_review=self.bai).count(), 1)
+
+        # Admin vẫn được upload để hỗ trợ kiểm duyệt
+        r = self.client_admin.post(
+            "/api/hinh-anh/",
+            {"bai_review": self.bai.id, "hinh_anh": tao_anh_jpeg("admin.jpg")},
+            format="multipart",
+        )
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertEqual(HinhAnh.objects.filter(bai_review=self.bai).count(), 2)
 
     def test_chi_nguoi_tai_anh_hoac_admin_duoc_xoa(self):
         r = self.client_a.post(

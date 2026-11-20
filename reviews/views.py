@@ -267,8 +267,18 @@ class HinhAnhViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        # [SUA] Bỏ kiểm tra "chỉ chủ bài"; mọi thành viên đều được upload
-        # và server tự gán người tải ảnh.
+        # [SUA 2026-11-20] Chỉ người đăng bài mới được tải ảnh lên bài của mình.
+        # Quản trị viên vẫn được phép (để hỗ trợ/kiểm duyệt).
+        bai = serializer.validated_data["bai_review"]
+
+        if (
+            not la_quan_tri(self.request.user)
+            and bai.nguoi_dung_id != self.request.user.id
+        ):
+            raise PermissionDenied(
+                "Chỉ người đăng bài mới được tải ảnh lên bài của mình."
+            )
+
         serializer.save(nguoi_dung=self.request.user)
 
 

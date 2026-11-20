@@ -218,7 +218,6 @@ class BaiReviewSerializer(serializers.ModelSerializer):
     )
     # [SUA] Một bài review có NHIỀU lượt chấm (trước đây là một)
     danh_sach_cham_diem = ChamDiemSerializer(many=True, read_only=True)
-    diem_cua_toi = serializers.SerializerMethodField()
     hinh_anh = HinhAnhSerializer(many=True, read_only=True)
     danh_sach_the = TheMonAnSerializer(
         source="the_mon_an",
@@ -232,6 +231,8 @@ class BaiReviewSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True,
     )
+
+    diem_cua_toi = serializers.SerializerMethodField()
 
     def get_diem_cua_toi(self, obj):
         """[MOI] Trả về lượt chấm của người đang gọi (nếu đã đăng nhập)."""
